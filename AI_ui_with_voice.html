@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1" name="viewport"/>
+<title>語音↔文字 Demo</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    body { background: #f5f7fa; }
+    .voiceselect { min-width: 160px; }
+  </style>
+</head>
+<body class="p-6 font-sans">
+<div class="max-w-2xl mx-auto bg-white rounded-2xl shadow-xl p-6 space-y-6 font-sans">
+<h1 class="text-2xl font-bold">運動AI助手</h1>
+<div class="space-y-4">
+<div class="flex gap-2">
+<button class="px-4 py-2 bg-green-600 text-white rounded-lg" id="startBtn">🎤 開始辨識</button>
+<button class="px-4 py-2 bg-red-500 text-white rounded" disabled="" id="stopBtn">🛑 停止</button>
+<span class="text-sm text-gray-500 self-center" id="status">狀態：未啟動</span>
+</div>
+<textarea class="w-full border p-2 rounded" id="userInput" placeholder="你可以打字或語音輸入..." rows="3"></textarea>
+<div class="flex gap-2">
+<button class="px-4 py-2 bg-blue-600 text-white rounded" id="sendBtn">📨 傳送訊息</button>
+<button class="px-4 py-2 bg-gray-300 rounded" id="clearBtn">🧹 清除輸入</button>
+</div>
+</div>
+<div class="space-y-3 max-h-[400px] overflow-y-auto border-t pt-4" id="chatArea">
+<!-- 動態插入訊息 -->
+</div>
+<div class="space-y-2">
+<label class="block font-medium">AI 回覆朗讀：</label>
+<div class="flex items-center gap-2">
+<select class="border rounded p-1 voiceselect" id="voiceSelect"></select>
+<label>語速</label><input id="rate" max="2" min="0.5" step="0.1" type="range" value="1"/>
+<label>音調</label><input id="pitch" max="2" min="0" step="0.1" type="range" value="1"/>
+</div>
+<button class="px-4 py-2 bg-indigo-600 text-white rounded" id="speakBtn">🔈 朗讀最後一則回應</button>
+</div>
+</div>
+<script>
+const API_URL = "https://arriving-oarfish-broadly.ngrok-free.app/chat_stream"; // 替換為 ngrok 端點
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const sendBtn = document.getElementById("sendBtn");
+const clearBtn = document.getElementById("clearBtn");
+const statusEl = document.getElementById("status");
+const userInput = document.getElementById("userInput");
+const chatArea = document.getElementById("chatArea");
+const speakBtn = document.getElementById("speakBtn");
+
+let recognition = null;
+let isRecognizing = false;
+let lastTranscript = "";
+
+const synth = window.speechSynthesis;
+const voiceSelect = document.getElementById("voiceSelect");
+const rateSlider = document.getElementById("rate");
+const pitchSlider = document.getElementById("pitch");
+let voices = [];
+
+function populateVoices() {
+  voices = synth.getVoices();
+  voiceSelect.innerHTML = "";
+  voices.forEach((v, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = v.name + " (" + v.lang + ")";
+    voiceSelect.appendChild(opt);
+  });
+}
+populateVoices();
+if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = populateVoices;
+
+function speak(text) {
+  const utter = new SpeechSynthesisUtterance(text);
+  const selectedVoice = voices[voiceSelect.value];
+  if (selectedVoice) utter.voice = selectedVoice;
+  utter.rate = parseFloat(rateSlider.value || 1);
+  utter.pitch = parseFloat(pitchSlider.value || 1);
+  utter.lang = "zh-TW";
+
+  synth.cancel();
+  synth.speak(utter);
+}
+
+function appendMessage(text, sender) {
+  const div = document.createElement("div");
+  div.className = `message ${sender} p-2 rounded ${sender === "user" ? "bg-blue-100 text-right" : "bg-gray-100 text-left"}`;
+//  div.className = "p-2 rounded " + (sender === "user" ? "bg-blue-100 text-right" : "bg-gray-100 text-left");
+  div.textContent = text;
+  chatArea.appendChild(div);
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function setupRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    alert("瀏覽器不支援語音辨識");
+	startBtn.disabled = true;
+    return;
+  }
+  recognition = new SR();
+  recognition.lang = "zh-TW";
+  recognition.interimResults = true;
+  recognition.continuous = true;
+
+  recognition.onstart = () => {
+    isRecognizing = true;
+    statusEl.textContent = "🎤 正在辨識...";
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+  };
+  recognition.onerror = (e) => {
+    statusEl.textContent = "錯誤：" + e.error;
+  };
+  recognition.onend = () => {
+    isRecognizing = false;
+    statusEl.textContent = "🛑 已停止辨識";
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  };
+  
+  recognition.onresult = (event) => {
+  for (let i = event.resultIndex; i < event.results.length; ++i) {
+    if (event.results[i].isFinal) {
+      userInput.value += event.results[i][0].transcript;
+    }
+  }
+  };
+
+}
+setupRecognition();
+
+startBtn.onclick = () => recognition.start();
+stopBtn.onclick = () => recognition.stop();
+clearBtn.onclick = () => userInput.value = "";
+
+sendBtn.onclick = async () => {
+  const text = userInput.value.trim();
+  if (!text) return;
+
+  appendMessage(text, "user");
+  userInput.value = "";
+
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: text }),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+
+    let aiReply = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+	  aiReply += decoder.decode(value, { stream: true });
+      //const chunk = decoder.decode(value, { stream: true });
+      //aiReply += chunk;
+      //appendMessage(aiReply, "ai");  // 也可改為每次 chunk 一起顯示
+    }
+  // ✅ 濾除 <think> 標籤區段
+    aiReply = aiReply.replace(/<think>.*?<\/think>/gs, "").trim();
+  // ✅ 只在全部讀完後再顯示訊息
+    appendMessage(aiReply, "ai");
+    //speak(aiReply);
+  } catch (e) {
+    console.error("❌ 串接錯誤：", e);
+    appendMessage("⚠️ 無法取得 AI 回應", "ai");
+  }
+};
+document.getElementById("speakBtn").addEventListener("click", () => {
+  // 從所有 ai 對話中抓出最後一句
+  const messages = document.querySelectorAll(".message.ai");
+  if (messages.length === 0) return;
+  const lastMsg = messages[messages.length - 1].textContent.trim();
+  if (lastMsg) {
+    speak(lastMsg);
+  }
+});
+//speakBtn.onclick = () => {
+  //const last = [...chatArea.children].filter(div => div.className.includes("bg-gray"))?.pop();
+  //if (last) speak(last.textContent);
+//};
+</script></body>
+</html>
